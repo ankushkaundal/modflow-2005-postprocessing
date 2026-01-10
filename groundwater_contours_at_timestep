@@ -1,0 +1,390 @@
+############ for modflow 2005, you have specify orgin of grid frame of model in utm coordinates,
+# or keep it zero, graphs will be plotted without actual UTMs
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+from matplotlib.collections import PatchCollection
+import matplotlib.ticker as ticker
+from flopy.utils import HeadFile
+
+# -------------------------------------------------------
+# USER INPUT & COORDINATES
+# -------------------------------------------------------
+model_ws = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip\t3a_ip2_MODFLOW"
+model_name = "t3a_ip2"
+output_folder = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip\results"
+output_file = "heads_final_lake_rejuv.png"
+layer_to_plot = 0
+
+utm_xll = 570000
+utm_yll = 2630000
+
+# -------------------------------------------------------
+# CONTOUR SETTINGS
+# -------------------------------------------------------
+plot_contours = True
+contour_interval = 1
+contour_color = "k"
+contour_linewidth = 1.0
+
+# -------------------------------------------------------
+# FLEXIBLE TIMESTEP / STRESS PERIOD SELECTION
+# -------------------------------------------------------
+# Method 1: Use stress period numbers
+# Format: (stress_period, timestep_within_period)
+# IMPORTANT: Use the stress period numbers from your table's first column
+# If your table shows "stress period 0, 1, 2..." then use those numbers directly
+# The code will handle the conversion internally
+# For Oct-2018, Oct-2025, Mar-2018, Mar-2025:
+
+# BUG FIX: Stress periods in MODFLOW are 1-indexed (SP 1, 2, 3...) but Python/flopy uses 0-indexed internally.
+# Use stress period numbers directly from your table - the code converts them correctly.
+# OR use cumulative days (e.g., 3195, 5752) which is more reliable and avoids indexing confusion.
+
+# selections = [(105, 1), (189, 1), (98, 1), (182, 1)]  # Use table column values
+
+
+# # Method 2: Use cumulative days (RECOMMENDED - clearer and less confusing)
+
+# use_cumulative_days = False
+use_cumulative_days = True  # Set to True if using Method 2
+
+
+## Lake rejuvinated
+selections = [3195, 5752, 2981, 5538]
+custom_labels_list = ["Oct-2018", "Oct-2025", "Mar-2018", "Mar-2025"]
+
+## high low rainfall 2018, 2020
+# selections = [2981, 3195, 3712, 3926]
+# custom_labels_list = ["Mar-2018", "Oct-2018", "Mar-2020", "Oct-2020"]
+
+# selections = [4656, 5021, 5387, 5752]
+# custom_labels_list = ["Oct-2022", "Oct-2023", "Oct-2024", "Oct-2025"]
+
+
+
+# -------------------------------------------------------
+# LOAD MODEL DATA
+# -------------------------------------------------------
+head_file_path = os.path.join(model_ws, f"{model_name}.hed")
+head_file = HeadFile(head_file_path)
+kstpkper = head_file.get_kstpkper()  # List of (timestep, stress_period) tuples (0-indexed)
+times = head_file.get_times()  # Cumulative times in days
+n_available = len(times)
+
+print(f"Total records available: {n_available}")
+print(f"Stress periods range: 0 to {max([sp for ts, sp in kstpkper])}")
+print(f"Time range: {times[0]:.1f} to {times[-1]:.1f} days")
+print("\n--- First 10 records ---")
+for i in range(min(10, len(kstpkper))):
+    ts, sp = kstpkper[i]
+    print(f"Index {i}: SP {sp + 1}, TS {ts + 1}, Day {times[i]:.1f}")
+print("\n--- Last 10 records ---")
+for i in range(max(0, len(kstpkper) - 10), len(kstpkper)):
+    ts, sp = kstpkper[i]
+    print(f"Index {i}: SP {sp + 1}, TS {ts + 1}, Day {times[i]:.1f}")
+print("\n--- Searching for your target days ---")
+target_days = [3195, 5752, 2981, 5538]
+for td in target_days:
+    idx = np.argmin(np.abs(np.array(times) - td))
+    ts, sp = kstpkper[idx]
+    print(f"Day {td} → Index {idx}: SP {sp + 1}, TS {ts + 1}, Actual Day {times[idx]:.1f}")
+
+# -------------------------------------------------------
+# MAP SELECTIONS TO INDICES
+# -------------------------------------------------------
+plot_selection_list = []
+
+for i, sel in enumerate(selections):
+    if use_cumulative_days and isinstance(sel, (int, float)):
+        # Find the closest time index to the target day
+        target_day = sel
+        idx = np.argmin(np.abs(np.array(times) - target_day))
+        actual_day = times[idx]
+        sp, ts = kstpkper[idx]
+        print(f"Selection {i + 1}: Target day {target_day} → Index {idx}, "
+              f"Actual day {actual_day:.1f}, SP {sp + 1}, TS {ts + 1}")
+
+    elif isinstance(sel, tuple):
+        # sel is (StressPeriod, TimeStep) - using table numbering
+        sp_table, ts_table = sel
+        # The table starts at SP 1 (Day 31), but kstpkper is 0-indexed
+        # So SP 1 in table = index 0 in kstpkper
+        sp_zero = sp_table - 1
+        ts_zero = ts_table - 1
+        # Flopy stores as (timestep, stress_period)
+        target_tuple = (ts_zero, sp_zero)
+
+        try:
+            idx = kstpkper.index(target_tuple)
+            actual_day = times[idx]
+            print(f"Selection {i + 1}: Table SP {sp_table}, TS {ts_table} → Index {idx}, "
+                  f"Day {actual_day:.1f}")
+        except ValueError:
+            print(f"Warning: Stress Period {sp_table}, TimeStep {ts_table} not found!")
+            print(f"Available SP range: 1 to {max([sp for ts, sp in kstpkper]) + 1}")
+            continue
+
+    else:
+        print(f"Warning: Invalid selection format: {sel}")
+        continue
+
+    plot_selection_list.append({
+        'index': idx,
+        'label': custom_labels_list[i],
+        'day': times[idx],
+        'sp': kstpkper[idx][1] + 1,  # Convert back to 1-indexed for display
+        'ts': kstpkper[idx][0] + 1
+    })
+
+if len(plot_selection_list) == 0:
+    print("Error: No valid selections found!")
+    exit()
+
+# -------------------------------------------------------
+# GRID SETUP
+# -------------------------------------------------------
+first_head = head_file.get_data(kstpkper=kstpkper[0])
+nlay, nrow, ncol = first_head.shape
+
+delr = np.ones(ncol) * 300
+delc = np.ones(nrow) * 300
+
+xedge = np.concatenate([[0], np.cumsum(delr)]) + utm_xll
+yedge = np.concatenate([[0], np.cumsum(delc[::-1])]) + utm_yll
+
+xcenter = (xedge[:-1] + xedge[1:]) / 2
+ycenter = (yedge[:-1] + yedge[1:]) / 2
+X, Y = np.meshgrid(xcenter, ycenter)
+
+# -------------------------------------------------------
+# LOAD ALL HEAD DATA
+# -------------------------------------------------------
+all_heads = []
+for item in plot_selection_list:
+    ts_idx = item['index']
+    h = head_file.get_data(kstpkper=kstpkper[ts_idx])[layer_to_plot]
+    h[h <= -999] = np.nan
+    all_heads.append(h)
+    print(f"Loaded data for {item['label']}: SP {item['sp']}, "
+          f"Day {item['day']:.1f}, Head range: {np.nanmin(h):.2f} to {np.nanmax(h):.2f} m")
+
+vmin = np.nanmin([np.nanmin(h) for h in all_heads])
+vmax = np.nanmax([np.nanmax(h) for h in all_heads])
+
+print(f"\nOverall head range: {vmin:.2f} to {vmax:.2f} m")
+
+# -------------------------------------------------------
+# INITIALIZE PLOT
+# -------------------------------------------------------
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+axes = axes.flatten()
+
+# -------------------------------------------------------
+# PLOTTING LOOP
+# -------------------------------------------------------
+for idx, item in enumerate(plot_selection_list):
+    ax = axes[idx]
+    head_layer = all_heads[idx]
+
+    # Create patches for each cell
+    patches = []
+    colors = []
+    for i in range(nrow):
+        for j in range(ncol):
+            if not np.isnan(head_layer[i, j]):
+                rect = Rectangle((xedge[j], yedge[nrow - 1 - i]), delr[j], delc[i])
+                patches.append(rect)
+                colors.append(head_layer[i, j])
+
+    pc = PatchCollection(patches, cmap='viridis', edgecolor='k', linewidths=0.15)
+    pc.set_array(np.array(colors))
+    pc.set_clim(vmin, vmax)
+    ax.add_collection(pc)
+
+    # --- CONTOURS ---
+    if plot_contours:
+        head_flipped = np.flipud(head_layer)
+        levels = np.arange(np.floor(vmin), np.ceil(vmax) + contour_interval, contour_interval)
+        cs = ax.contour(X, Y, head_flipped, levels=levels,
+                        colors=contour_color, linewidths=contour_linewidth, alpha=0.9)
+        ax.clabel(cs, inline=True, fontsize=10, fmt="%.1f")
+
+    # --- AXIS FORMATTING ---
+    ax.set_aspect('equal')
+    ax.autoscale_view()
+
+    # X-AXIS: Plain format, max 2-3 ticks
+    ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=2))
+
+    # Y-AXIS: Scientific format (1e6), max 2 ticks
+    ax.yaxis.set_major_formatter(ticker.ScalarFormatter(useMathText=True))
+    ax.yaxis.get_major_formatter().set_scientific(True)
+    ax.yaxis.get_major_formatter().set_powerlimits((0, 0))
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=1))
+
+    # Appearance
+    ax.tick_params(axis='both', labelsize=16)
+    ax.set_title(item['label'], fontsize=22, pad=10)
+    ax.set_xlabel("X (m)", fontsize=20)
+    ax.set_ylabel("Y (m)", fontsize=20)
+
+# -------------------------------------------------------
+# FINAL LAYOUT & COLORBAR
+# -------------------------------------------------------
+fig.subplots_adjust(left=0.08, right=0.86, bottom=0.08, top=0.95,
+                    wspace=0.25, hspace=0.4)
+
+cbar_ax = fig.add_axes([0.88, 0.25, 0.03, 0.5])
+cbar = fig.colorbar(pc, cax=cbar_ax)
+cbar.set_label("Groundwater Head (m)", fontsize=20)
+cbar.ax.tick_params(labelsize=15.5)
+
+# Save
+os.makedirs(output_folder, exist_ok=True)
+output_path = os.path.join(output_folder, output_file)
+plt.savefig(output_path, dpi=500, bbox_inches='tight')
+print(f"\n✓ Success! Plot saved to: {output_path}")
+plt.show()
+
+
+# ####### code 2
+# import os
+# import numpy as np
+# import matplotlib.pyplot as plt
+# from matplotlib.patches import Rectangle
+# from matplotlib.collections import PatchCollection
+# import flopy
+# from flopy.utils import HeadFile
+#
+# # -------------------------------------------------------
+# # USER INPUT
+# # -------------------------------------------------------
+# model_ws = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip\t3a_ip_MODFLOW"
+# model_name = "t3a_ip"
+# output_folder = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip\results"
+# output_file = "heads_relative_plot.png"
+#
+# layer_to_plot = 0
+#
+# # AESTHETIC TOGGLES FROM SAMPLE
+# use_custom_labels = True
+# custom_labels = ["Mar 2012", "Oct 2024", "Mar 2022", "Oct 2022"]
+#
+# # CONTOUR SETTINGS
+# plot_contours = True
+# contour_interval = 1.0
+# contour_color = "k"
+# contour_linewidth = 1
+#
+# # -------------------------------------------------------
+# # LOAD MODEL DATA
+# # -------------------------------------------------------
+# head_file_path = os.path.join(model_ws, f"{model_name}.hed")
+# head_file = HeadFile(head_file_path)
+# times = head_file.get_times()
+# kstpkper = head_file.get_kstpkper()
+#
+# first_head = head_file.get_data(kstpkper=kstpkper[0])
+# nlay, nrow, ncol = first_head.shape
+#
+# delr = np.ones(ncol) * 300
+# delc = np.ones(nrow) * 300
+#
+# xedge = np.concatenate([[0], np.cumsum(delr)])
+# yedge = np.concatenate([[0], np.cumsum(delc[::-1])])
+#
+# xcenter = (xedge[:-1] + xedge[1:]) / 2
+# ycenter = (yedge[:-1] + yedge[1:]) / 2
+# X, Y = np.meshgrid(xcenter, ycenter)
+#
+# # -------------------------------------------------------
+# # SELECT TIMESTEPS (Matching USG selection logic)
+# # -------------------------------------------------------
+# nsteps = len(times)
+# indices = [0, nsteps // 3, 2 * nsteps // 3, nsteps - 1]
+# time_steps = [min(ts, nsteps - 1) for ts in indices]
+#
+# # -------------------------------------------------------
+# # CREATE 2x2 FIGURE (Aesthetic Match)
+# # -------------------------------------------------------
+# fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+# axes = axes.flatten()
+#
+# all_heads = []
+# for ts in time_steps:
+#     h = head_file.get_data(kstpkper=kstpkper[ts])[layer_to_plot]
+#     h[h <= -999] = np.nan
+#     all_heads.append(h)
+#
+# vmin, vmax = np.nanmin(all_heads), np.nanmax(all_heads)
+#
+# for idx, (ax, ts) in enumerate(zip(axes, time_steps)):
+#     head_layer = all_heads[idx]
+#     patches = []
+#     colors = []
+#
+#     for i in range(nrow):
+#         for j in range(ncol):
+#             if not np.isnan(head_layer[i, j]):
+#                 rect = Rectangle((xedge[j], yedge[nrow - 1 - i]), delr[j], delc[i])
+#                 patches.append(rect)
+#                 colors.append(head_layer[i, j])
+#
+#     # PolyCollection-style appearance for structured cells
+#     pc = PatchCollection(patches, cmap='viridis', edgecolor='k', linewidths=0.15)
+#     pc.set_array(np.array(colors))
+#     pc.set_clim(vmin, vmax)
+#     ax.add_collection(pc)
+#
+#     # --- Contours ---
+#     if plot_contours:
+#         head_flipped = np.flipud(head_layer)
+#         levels = np.arange(np.floor(vmin), np.ceil(vmax), contour_interval)
+#         cs = ax.contour(X, Y, head_flipped, levels=levels,
+#                         colors=contour_color, linewidths=contour_linewidth, alpha=0.9)
+#         ax.clabel(cs, inline=True, fontsize=10, fmt="%.1f")
+#
+#     # --- Axis Appearance (Matching Sample) ---
+#     ax.set_aspect('equal')
+#     ax.autoscale_view()
+#
+#     # Limit to 4 ticks and set font sizes
+#     ax.locator_params(axis='both', nbins=4)
+#     ax.tick_params(axis='both', labelsize=16)
+#
+#     # Titles & labels (Matching Sample Font Sizes)
+#     if use_custom_labels and idx < len(custom_labels):
+#         title_text = custom_labels[idx]
+#     else:
+#         title_text = f"t = {times[ts]:.1f} days"
+#
+#     ax.set_title(title_text, fontsize=22, pad=10)
+#     ax.set_xlabel("X (m)", fontsize=20)
+#     ax.set_ylabel("Y (m)", fontsize=20)
+#
+# # -------------------------------------------------------
+# # SINGLE COLORBAR POSITIONING (Exact match to USG sample)
+# # -------------------------------------------------------
+# fig.subplots_adjust(left=0.08, right=0.86, bottom=0.06, top=0.95,
+#                     wspace=0.2, hspace=0.12)
+#
+# # Colorbar axis: [left, bottom, width, height]
+# cbar_ax = fig.add_axes([0.88, 0.25, 0.03, 0.5])
+#
+# cbar = fig.colorbar(pc, cax=cbar_ax)
+# cbar.set_label("Groundwater Head (m)", fontsize=20)
+# cbar.ax.tick_params(labelsize=15.5)
+#
+# # Save with high DPI
+# os.makedirs(output_folder, exist_ok=True)
+# output_path = os.path.join(output_folder, output_file)
+# fig.savefig(output_path, dpi=500, bbox_inches='tight')
+#
+# print(f"Plot saved with USG styling to: {output_path}")
+# plt.show()
+
+
