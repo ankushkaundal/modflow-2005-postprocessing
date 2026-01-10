@@ -1,0 +1,282 @@
+"""Positive STORAGE-IN means water flowing into the flow system from the aquifer storage, which means water levels are falling an storge is decreasing """
+
+
+import numpy as np
+import pandas as pd
+import os
+from flopy.utils import ZoneBudget, CellBudgetFile
+
+# =======================================================
+# USER INPUT
+# =======================================================
+model_ws = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip\t3a_ip2_MODFLOW"
+model_name = "t3a_ip2"
+
+ccf_file = os.path.join(model_ws, f"{model_name}.ccf")
+
+# Results folder
+results_root = os.path.dirname(model_ws)
+results_folder = os.path.join(results_root, "results")
+os.makedirs(results_folder, exist_ok=True)
+
+# =======================================================
+# ZONE CONFIGURATION
+# =======================================================
+# OPTION 1: Single cell
+use_single_cell = False
+TARGET_CELL = 925  # 1-based cell number
+
+# OPTION 2: Multiple specific cells
+use_multiple_cells = True
+TARGET_CELLS = [
+    755, 756, 757, 758, 759,
+    811, 812, 813, 814, 815,
+    867, 868, 869, 870, 871,
+    923, 924, 925, 926, 927,
+    979, 980, 981, 982, 983
+]
+ # List of 1-based cell numbers
+
+# OPTION 3: All cells in the model
+use_all_cells = False
+
+# =======================================================
+# LOAD MODEL DIMENSIONS
+# =======================================================
+print("=" * 80)
+print("LOADING MODEL DIMENSIONS")
+print("=" * 80)
+
+cbc = CellBudgetFile(ccf_file)
+nlay, nrow, ncol = cbc.shape
+total_cells = nlay * nrow * ncol
+
+print(f"Model: {nlay} layers × {nrow} rows × {ncol} columns ({total_cells} cells)")
+
+# =======================================================
+# CREATE ZONE ARRAY
+# =======================================================
+print("\n" + "=" * 80)
+print("ZONE CONFIGURATION")
+print("=" * 80)
+
+# Zone 1 = all cells (background)
+# Zone 2+ = target cells
+zone_array = np.ones((nlay, nrow, ncol), dtype=np.int32)
+
+if use_all_cells:
+    # All cells as Zone 2
+    zone_array[:] = 2
+    print(f"✓ MODE: ALL CELLS")
+    print(f"  Zone 2: All {total_cells} cells")
+    target_zone = 2
+    zone_label = "all"
+
+elif use_multiple_cells:
+    # Multiple specific cells
+    print(f"✓ MODE: MULTIPLE CELLS")
+    print(f"  Zone 1 (background): {total_cells - len(TARGET_CELLS)} cells")
+    print(f"  Zone 2 (targets): {len(TARGET_CELLS)} cells")
+    print(f"    Cells: {TARGET_CELLS}")
+
+    for cell_1based in TARGET_CELLS:
+        cell_idx = cell_1based - 1
+        zone_array.ravel()[cell_idx] = 2
+
+    target_zone = 2
+    zone_label = "multiple"
+
+else:
+    # Single cell mode
+    cell_idx = TARGET_CELL - 1
+    zone_array.ravel()[cell_idx] = 2
+
+    print(f"✓ MODE: SINGLE CELL")
+    print(f"  Zone 1 (background): {total_cells - 1} cells")
+    print(f"  Zone 2 (target): Cell {TARGET_CELL} (0-based index: {cell_idx})")
+
+    target_zone = 2
+    zone_label = "single"
+
+# =======================================================
+# LOAD ZONEBUDGET
+# =======================================================
+print("\n" + "=" * 80)
+print("LOADING ZONEBUDGET")
+print("=" * 80)
+
+zb = ZoneBudget(ccf_file, zone_array)
+print("✓ ZoneBudget loaded successfully")
+
+# =======================================================
+# EXTRACT ZONE BUDGET DATA
+# =======================================================
+print("\n" + "=" * 80)
+print("EXTRACTING ZONE BUDGET")
+print("=" * 80)
+
+# Get the raw dataframe with MultiIndex
+df_all = zb.get_dataframes()
+
+print(f"Raw DataFrame shape: {df_all.shape}")
+print(f"Index levels: {df_all.index.names}")
+print(f"Columns (zones): {list(df_all.columns)}")
+
+# Extract Zone 2 data using cross-section
+df_zone2 = df_all[f'ZONE_{target_zone}'].copy()
+
+print(f"Zone {target_zone} data extracted: {len(df_zone2)} records")
+
+# =======================================================
+# PROCESS AND FORMAT BUDGET DATA
+# =======================================================
+print("\n" + "=" * 80)
+print("PROCESSING BUDGET COMPONENTS")
+print("=" * 80)
+
+# Get unique time steps
+time_steps = df_zone2.index.get_level_values('totim').unique()
+print(f"Time steps: {len(time_steps)}")
+
+# Define the budget components we want to track (matching software output)
+budget_components = [
+    'FROM_CONSTANT_HEAD',
+    'FROM_DRAINS',
+    'FROM_HEAD_DEP_BOUNDS',
+    'FROM_RECHARGE',
+    'FROM_ET_SEGMENTS',
+    'FROM_STORAGE',
+    'FROM_ZONE_1',  # Zone 1 to Zone 2
+    'TO_CONSTANT_HEAD',
+    'TO_DRAINS',
+    'TO_HEAD_DEP_BOUNDS',
+    'TO_RECHARGE',
+    'TO_ET_SEGMENTS',
+    'TO_STORAGE',
+    'TO_ZONE_1'  # Zone 2 to Zone 1
+]
+
+# Create clean budget records
+clean_records = []
+
+for time in time_steps:
+    # Get all budget components for this time step
+    time_data = df_zone2.xs(time, level='totim')
+
+    record = {
+        'Timestep': len(clean_records) + 1,
+        'Time_days': time
+    }
+
+    # Track totals
+    total_in = 0
+    total_out = 0
+
+    # Process each budget component
+    for component in budget_components:
+        if component in time_data.index:
+            value = time_data[component]
+
+            # Store with cleaner names
+            if component.startswith('FROM_'):
+                # This is an inflow
+                clean_name = component.replace('FROM_', 'IN_').replace('ZONE_1', 'from_Zone1')
+                record[clean_name] = value
+                total_in += value
+
+            elif component.startswith('TO_'):
+                # This is an outflow - store as positive value
+                clean_name = component.replace('TO_', 'OUT_').replace('ZONE_1', 'to_Zone1')
+                record[clean_name] = abs(value)
+                total_out += abs(value)
+
+    record['TOTAL_IN'] = total_in
+    record['TOTAL_OUT'] = total_out
+    record['NET_IN_MINUS_OUT'] = total_in - total_out
+
+    if (total_in + total_out) > 0:
+        record['PERCENT_DISCREPANCY'] = 100 * (total_in - total_out) / ((total_in + total_out) / 2)
+    else:
+        record['PERCENT_DISCREPANCY'] = 0
+
+    clean_records.append(record)
+
+df_clean = pd.DataFrame(clean_records)
+
+# Reorder columns for better readability
+col_order = ['Timestep', 'Time_days']
+col_order += [c for c in df_clean.columns if c.startswith('IN_')]
+col_order.append('TOTAL_IN')
+col_order += [c for c in df_clean.columns if c.startswith('OUT_')]
+col_order.append('TOTAL_OUT')
+col_order += ['NET_IN_MINUS_OUT', 'PERCENT_DISCREPANCY']
+
+df_clean = df_clean[col_order]
+
+# =======================================================
+# SAVE CLEAN CSV (ONLY CSV, NO TEXT FILE)
+# =======================================================
+csv_output = os.path.join(results_folder, f"zonebudget_n_{zone_label}.csv")
+df_clean.to_csv(csv_output, index=False)
+print(f"\n✔ Budget saved to:\n  {csv_output}")
+
+# Display first few rows
+print("\nFirst 5 rows of output:")
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', 200)
+print(df_clean.head())
+
+# =======================================================
+# BUDGET SUMMARY (First 5 Time Steps)
+# =======================================================
+print("\n" + "=" * 80)
+print("BUDGET SUMMARY (First 5 Time Steps)")
+print("=" * 80)
+
+for idx in range(min(5, len(df_clean))):
+    row = df_clean.iloc[idx]
+    print(f"\nTimestep {int(row['Timestep'])} (Time: {row['Time_days']:.1f} days):")
+    print(f"  Total IN:            {row['TOTAL_IN']:15,.4f}")
+    print(f"  Total OUT:           {row['TOTAL_OUT']:15,.4f}")
+    print(f"  NET (IN - OUT):      {row['NET_IN_MINUS_OUT']:15,.4f}")
+    print(f"  Percent Discrepancy: {row['PERCENT_DISCREPANCY']:15,.8f}%")
+
+# =======================================================
+# DISPLAY AVAILABLE BUDGET COMPONENTS
+# =======================================================
+print("\n" + "=" * 80)
+print("AVAILABLE BUDGET COMPONENTS")
+print("=" * 80)
+
+in_comps = [c for c in df_clean.columns if c.startswith('IN_')]
+out_comps = [c for c in df_clean.columns if c.startswith('OUT_')]
+
+print(f"\nINFLOW Components ({len(in_comps)}):")
+for i, comp in enumerate(in_comps, 1):
+    max_val = df_clean[comp].max()
+    print(f"  {i}. {comp:30s} (max: {max_val:15,.4f})")
+
+print(f"\nOUTFLOW Components ({len(out_comps)}):")
+for i, comp in enumerate(out_comps, 1):
+    max_val = df_clean[comp].max()
+    print(f"  {i}. {comp:30s} (max: {max_val:15,.4f})")
+
+# =======================================================
+# TIME SERIES STATISTICS
+# =======================================================
+print("\n" + "=" * 80)
+print("TIME SERIES STATISTICS")
+print("=" * 80)
+
+print(f"\nTotal time steps: {len(df_clean)}")
+print(f"Time range: {df_clean['Time_days'].min():.1f} to {df_clean['Time_days'].max():.1f} days")
+print(f"\nTotal IN  (sum over all time):  {df_clean['TOTAL_IN'].sum():15,.2f}")
+print(f"Total OUT (sum over all time):  {df_clean['TOTAL_OUT'].sum():15,.2f}")
+print(f"Net flow (IN - OUT):             {df_clean['NET_IN_MINUS_OUT'].sum():15,.2f}")
+print(f"\nAverage discrepancy: {df_clean['PERCENT_DISCREPANCY'].abs().mean():.8f}%")
+print(f"Maximum discrepancy: {df_clean['PERCENT_DISCREPANCY'].abs().max():.8f}%")
+
+print("\n" + "=" * 80)
+print("EXTRACTION COMPLETE")
+print("=" * 80)
+print(f"\nOutput file: {csv_output}")
