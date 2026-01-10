@@ -1,0 +1,218 @@
+import os
+import numpy as np
+import pandas as pd
+from flopy.utils import HeadFile
+
+# -------------------------------------------------------
+# USER INPUT
+# -------------------------------------------------------
+model_ws = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip\t3a_ip2_MODFLOW"
+model_name = "t3a_ip2"
+output_folder = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip\results"
+
+# Layer to extract (0-indexed)
+layer_to_extract = 0
+
+# -------------------------------------------------------
+# SINGLE TIMESTAMP SELECTION (Choose ONE method below)
+# -------------------------------------------------------
+
+# METHOD 1: Use cumulative day (EASIEST - RECOMMENDED)
+use_method = "day"
+target_day = 3195  # Enter the day you want
+
+# METHOD 2: Use stress period and timestep (1-indexed from your table)
+# use_method = "stress_period"
+# target_stress_period = 105
+# target_timestep = 1
+
+# METHOD 3: Use date (requires simulation start date)
+# use_method = "date"
+# target_date = "2018-10-15"  # Format: YYYY-MM-DD
+# simulation_start_date = "2011-01-01"  # Your simulation start date
+
+# -------------------------------------------------------
+# UTM COORDINATES (optional - for reference)
+# -------------------------------------------------------
+utm_xll = 570000
+utm_yll = 2630000
+delr = 300
+delc = 300
+
+# -------------------------------------------------------
+# LOAD HEAD FILE AND GET GRID DIMENSIONS
+# -------------------------------------------------------
+head_file_path = os.path.join(model_ws, f"{model_name}.hed")
+if not os.path.exists(head_file_path):
+    print(f"ERROR: Head file not found at {head_file_path}")
+    exit()
+
+head_file = HeadFile(head_file_path)
+times = head_file.get_times()
+kstpkper = head_file.get_kstpkper()
+
+# Get grid dimensions
+first_head = head_file.get_data(kstpkper=kstpkper[0])
+nlay, nrow, ncol = first_head.shape
+
+total_cells = nrow * ncol
+
+print("=" * 70)
+print("MODFLOW HEAD EXTRACTOR - ALL CELLS")
+print("=" * 70)
+print(f"Grid dimensions: {nrow} rows x {ncol} cols")
+print(f"Total cells in layer {layer_to_extract}: {total_cells}")
+print(f"Total time steps: {len(times)}")
+print(f"Time range: {times[0]:.1f} to {times[-1]:.1f} days")
+
+# -------------------------------------------------------
+# FIND THE TARGET TIMESTAMP INDEX
+# -------------------------------------------------------
+print("\n" + "=" * 70)
+print("FINDING TARGET TIMESTAMP")
+print("=" * 70)
+
+if use_method == "day":
+    # Find closest time to target day
+    idx = np.argmin(np.abs(np.array(times) - target_day))
+    actual_day = times[idx]
+    sp, ts = kstpkper[idx]
+
+    print(f"Method: Cumulative Day")
+    print(f"Target day: {target_day}")
+    print(f"Closest match: Day {actual_day:.1f}")
+    print(f"Index: {idx}")
+    print(f"Stress Period: {sp + 1}, Timestep: {ts + 1}")
+
+    output_label = f"Day_{int(actual_day)}"
+
+elif use_method == "stress_period":
+    # Convert 1-indexed SP/TS to 0-indexed
+    sp_zero = target_stress_period - 1
+    ts_zero = target_timestep - 1
+    target_tuple = (ts_zero, sp_zero)
+
+    try:
+        idx = kstpkper.index(target_tuple)
+        actual_day = times[idx]
+
+        print(f"Method: Stress Period & Timestep")
+        print(f"Target: SP {target_stress_period}, TS {target_timestep}")
+        print(f"Found at Day: {actual_day:.1f}")
+        print(f"Index: {idx}")
+
+        output_label = f"SP{target_stress_period}_TS{target_timestep}"
+    except ValueError:
+        print(f"ERROR: Stress Period {target_stress_period}, Timestep {target_timestep} not found!")
+        print(f"Available SP range: 1 to {max([sp for ts, sp in kstpkper]) + 1}")
+        exit()
+
+elif use_method == "date":
+    # Convert date to days from start
+    start = pd.to_datetime(simulation_start_date)
+    target = pd.to_datetime(target_date)
+    days_from_start = (target - start).days
+
+    # Find closest time
+    idx = np.argmin(np.abs(np.array(times) - days_from_start))
+    actual_day = times[idx]
+    sp, ts = kstpkper[idx]
+    actual_date = start + pd.Timedelta(days=actual_day)
+
+    print(f"Method: Date")
+    print(f"Target date: {target_date}")
+    print(f"Days from start: {days_from_start}")
+    print(f"Closest match: Day {actual_day:.1f} ({actual_date.strftime('%Y-%m-%d')})")
+    print(f"Index: {idx}")
+    print(f"Stress Period: {sp + 1}, Timestep: {ts + 1}")
+
+    output_label = target_date.replace("-", "")
+
+else:
+    print(f"ERROR: Invalid method '{use_method}'. Use 'day', 'stress_period', or 'date'")
+    exit()
+
+# -------------------------------------------------------
+# EXTRACT HEAD DATA FOR ALL CELLS
+# -------------------------------------------------------
+print("\n" + "=" * 70)
+print("EXTRACTING HEAD DATA FOR ALL CELLS")
+print("=" * 70)
+
+# Load head data for the target timestamp
+head_array = head_file.get_data(kstpkper=kstpkper[idx])[layer_to_extract]
+
+# Create list to store all cell data
+all_cells_data = []
+
+print(f"Processing {total_cells} cells...")
+
+# Loop through all cells in the grid
+for row in range(nrow):
+    for col in range(ncol):
+        # Calculate 1-indexed cell ID
+        cell_id = row * ncol + col + 1
+
+        # Get head value
+        head_value = head_array[row, col]
+
+        # Skip inactive/dry cells (values <= -999 or exactly 0 which often means inactive)
+        if head_value <= -999:
+            continue
+
+        # Calculate UTM coordinates (cell center)
+        x_utm = utm_xll + (col + 0.5) * delr
+        y_utm = utm_yll + (row + 0.5) * delc
+
+        all_cells_data.append({
+            'Cell_ID': cell_id,
+            'Row': row,
+            'Col': col,
+            'X_UTM': x_utm,
+            'Y_UTM': y_utm,
+            'Head_m': head_value
+        })
+
+    # Progress indicator every 10 rows
+    if (row + 1) % 10 == 0:
+        print(f"  Processed {(row + 1) * ncol} / {total_cells} cells...")
+
+print(f"✓ Extracted {len(all_cells_data)} active cells (skipped {total_cells - len(all_cells_data)} inactive cells)!")
+
+# -------------------------------------------------------
+# CREATE DATAFRAME AND SAVE
+# -------------------------------------------------------
+df = pd.DataFrame(all_cells_data)
+
+# Calculate statistics
+print("\n" + "=" * 70)
+print("STATISTICS")
+print("=" * 70)
+print(f"Total cells in grid: {total_cells}")
+print(f"Active cells (with head): {len(df)}")
+print(f"Inactive/Dry cells (skipped): {total_cells - len(df)}")
+print(f"\nHead Statistics (active cells only):")
+print(f"  Mean head: {df['Head_m'].mean():.2f} m")
+print(f"  Min head:  {df['Head_m'].min():.2f} m")
+print(f"  Max head:  {df['Head_m'].max():.2f} m")
+print(f"  Std dev:   {df['Head_m'].std():.2f} m")
+
+# Save to CSV
+os.makedirs(output_folder, exist_ok=True)
+csv_file = os.path.join(output_folder, f"all_cells_heads_{output_label}.csv")
+df.to_csv(csv_file, index=False)
+
+print(f"\n{'=' * 70}")
+print(f"✓ CSV saved: {csv_file}")
+print(f"  File size: {os.path.getsize(csv_file) / 1024:.1f} KB")
+print(f"{'=' * 70}")
+
+# Display first and last few rows
+print("\nFirst 5 rows:")
+print(df.head(5).to_string(index=False))
+print("\nLast 5 rows:")
+print(df.tail(5).to_string(index=False))
+
+print("\n" + "=" * 70)
+print("EXTRACTION COMPLETE!")
+print("=" * 70)
