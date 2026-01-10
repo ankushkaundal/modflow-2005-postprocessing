@@ -1,11 +1,11 @@
 <!-- Figure 1 -->
 <p align="center">
   <img src="https://github.com/user-attachments/assets/b8c44dc4-ce3c-4d67-960b-26c1fc7f0236"
-       alt="Groundwater heads under high and low scenarios"
+       alt="Groundwater heads under high and low rainfall scenarios"
        width="900">
 </p>
 <p align="center">
-  <em>Figure 1. Simulated groundwater heads under high and low pumping scenarios.</em>
+  <em>Figure 1. Simulated groundwater heads under high and low rainfall scenarios.</em>
 </p>
 
 <br>
@@ -17,7 +17,7 @@
        width="800">
 </p>
 <p align="center">
-  <em>Figure 2. Time series of corrected groundwater water-budget components.</em>
+  <em>Figure 2. Time series of groundwater water-budget components.</em>
 </p>
 
 <br>
