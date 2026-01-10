@@ -1,0 +1,257 @@
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from flopy.utils import HeadFile
+
+# -------------------------------------------------------
+# USER INPUT
+# -------------------------------------------------------
+model_ws = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip\t3a_ip2_MODFLOW"
+model_name = "t3a_ip2"
+output_folder = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip\results"
+
+# Layer to extract (0-indexed)
+layer_to_extract = 0
+
+# -------------------------------------------------------
+# CELL SELECTION
+# -------------------------------------------------------
+# Define cell IDs (1-indexed, as typically used in MODFLOW)
+# Cell ID = (row - 1) * ncol + col for 1-indexed row, col
+# The code will automatically convert these to row, col indices
+
+# TARGET_CELLS = [
+#     755, 756, 757, 758, 759,
+#     811, 812, 813, 814, 815,
+#     867, 868, 869, 870, 871,
+#     923, 924, 925, 926, 927,
+#     979, 980, 981, 982, 983
+# ]
+
+TARGET_CELLS = [
+
+    812, 813, 814,
+    868, 870,
+    924, 925, 926
+
+]
+
+
+selected_cell_ids = TARGET_CELLS
+
+# -------------------------------------------------------
+# UTM COORDINATES (optional - for reference in output)
+# -------------------------------------------------------
+utm_xll = 570000  # Lower-left X coordinate
+utm_yll = 2630000  # Lower-left Y coordinate
+delr = 300  # Cell width in X direction (m)
+delc = 300  # Cell width in Y direction (m)
+
+# -------------------------------------------------------
+# PLOTTING OPTIONS
+# -------------------------------------------------------
+save_csv = True  # Save time series to CSV
+date_format = True  # Convert days to dates (requires start date)
+
+# If date_format is True, specify the simulation start date
+start_date = "2011-01-01"  # Format: YYYY-MM-DD
+
+# -------------------------------------------------------
+# LOAD HEAD FILE AND GET GRID DIMENSIONS
+# -------------------------------------------------------
+head_file_path = os.path.join(model_ws, f"{model_name}.hed")
+if not os.path.exists(head_file_path):
+    print(f"ERROR: Head file not found at {head_file_path}")
+    exit()
+
+head_file = HeadFile(head_file_path)
+times = head_file.get_times()
+kstpkper = head_file.get_kstpkper()
+
+# Get grid dimensions from first head array
+first_head = head_file.get_data(kstpkper=kstpkper[0])
+nlay, nrow, ncol = first_head.shape
+
+print(f"Grid dimensions: {nrow} rows x {ncol} cols")
+print(f"Total time steps: {len(times)}")
+print(f"Time range: {times[0]:.1f} to {times[-1]:.1f} days")
+print(f"Selected layer: {layer_to_extract}")
+
+# -------------------------------------------------------
+# CONVERT CELL IDs TO ROW, COL (0-indexed)
+# -------------------------------------------------------
+# Assuming cell IDs are 1-indexed: Cell_ID = (row-1)*ncol + col
+# Convert to 0-indexed row, col
+selected_cells = []
+cell_labels = []
+
+print(f"\nConverting {len(selected_cell_ids)} cell IDs to row, col:")
+for cell_id in selected_cell_ids:
+    # Convert 1-indexed cell ID to 0-indexed row, col
+    row = (cell_id - 1) // ncol
+    col = (cell_id - 1) % ncol
+
+    # Validate
+    if row >= nrow or col >= ncol or row < 0 or col < 0:
+        print(f"  WARNING: Cell ID {cell_id} is out of bounds! Skipping.")
+        continue
+
+    selected_cells.append((row, col))
+    cell_labels.append(f"Cell_{cell_id}")
+    print(f"  Cell ID {cell_id} → Row {row}, Col {col}")
+
+if len(selected_cells) == 0:
+    print("ERROR: No valid cells selected!")
+    exit()
+
+print(f"\nNumber of valid cells to extract: {len(selected_cells)}")
+
+# Calculate UTM coordinates for each cell
+utm_coords = []
+for row, col in selected_cells:
+    x_utm = utm_xll + (col + 0.5) * delr
+    y_utm = utm_yll + (row + 0.5) * delc
+    utm_coords.append((x_utm, y_utm))
+
+# Initialize data storage
+time_series_data = {label: [] for label in cell_labels}
+
+# Extract heads for all time steps
+print("\nExtracting time series...")
+for idx, ksp in enumerate(kstpkper):
+    head_data = head_file.get_data(kstpkper=ksp)[layer_to_extract]
+
+    for cell_idx, (row, col) in enumerate(selected_cells):
+        head_value = head_data[row, col]
+        if head_value <= -999:
+            head_value = np.nan
+        time_series_data[cell_labels[cell_idx]].append(head_value)
+
+    if (idx + 1) % 100 == 0:
+        print(f"  Processed {idx + 1}/{len(times)} time steps...")
+
+print("Extraction complete!")
+
+# -------------------------------------------------------
+# CREATE DATAFRAME
+# -------------------------------------------------------
+df_data = {'Time_Days': times}
+
+# Add date column if requested
+if date_format:
+    start = pd.to_datetime(start_date)
+    dates = [start + pd.Timedelta(days=t) for t in times]
+    df_data['Date'] = dates
+
+# Add head data for each cell
+for label in cell_labels:
+    df_data[label] = time_series_data[label]
+
+df = pd.DataFrame(df_data)
+
+# -------------------------------------------------------
+# CALCULATE MEAN TIME SERIES
+# -------------------------------------------------------
+# Calculate mean across all cells at each time step
+mean_heads = []
+for i in range(len(times)):
+    values_at_time = [time_series_data[label][i] for label in cell_labels]
+    # Use nanmean to handle any NaN values
+    mean_value = np.nanmean(values_at_time)
+    mean_heads.append(mean_value)
+
+df['Mean_All_Cells'] = mean_heads
+
+print("\n" + "=" * 60)
+print(f"Mean Time Series Statistics:")
+print(f"  Range: {np.nanmin(mean_heads):.2f} to {np.nanmax(mean_heads):.2f} m")
+print(f"  Overall Mean: {np.nanmean(mean_heads):.2f} m")
+print("=" * 60)
+
+# Print summary statistics
+print("\n" + "=" * 60)
+print("TIME SERIES SUMMARY")
+print("=" * 60)
+for idx, label in enumerate(cell_labels):
+    row, col = selected_cells[idx]
+    x_utm, y_utm = utm_coords[idx]
+    values = df[label].dropna()
+    print(f"\n{label}:")
+    print(f"  Grid Location: Row {row}, Col {col}")
+    print(f"  UTM Coordinates: X={x_utm:.0f}, Y={y_utm:.0f}")
+    print(f"  Head Range: {values.min():.2f} to {values.max():.2f} m")
+    print(f"  Mean Head: {values.mean():.2f} m")
+    print(f"  Valid data points: {len(values)}/{len(df)}")
+
+# -------------------------------------------------------
+# SAVE TO CSV
+# -------------------------------------------------------
+if save_csv:
+    os.makedirs(output_folder, exist_ok=True)
+    csv_file = os.path.join(output_folder, "head_timeseries.csv")
+    df.to_csv(csv_file, index=False)
+    print(f"\n✓ CSV saved to: {csv_file}")
+
+    # Also save metadata
+    metadata_file = os.path.join(output_folder, "head_timeseries_metadata.txt")
+    with open(metadata_file, 'w') as f:
+        f.write("MODFLOW HEAD TIME SERIES METADATA\n")
+        f.write("=" * 60 + "\n\n")
+        f.write(f"Model: {model_name}\n")
+        f.write(f"Layer: {layer_to_extract}\n")
+        f.write(f"Time Steps: {len(times)}\n")
+        f.write(f"Time Range: {times[0]:.1f} to {times[-1]:.1f} days\n\n")
+        for idx, label in enumerate(cell_labels):
+            row, col = selected_cells[idx]
+            x_utm, y_utm = utm_coords[idx]
+            f.write(f"{label}:\n")
+            f.write(f"  Grid: Row {row}, Col {col}\n")
+            f.write(f"  UTM: X={x_utm:.0f}, Y={y_utm:.0f}\n\n")
+    print(f"✓ Metadata saved to: {metadata_file}")
+
+# -------------------------------------------------------
+# PLOTTING - COMBINED PLOT WITH MEAN
+# -------------------------------------------------------
+time_axis = df['Date'] if date_format else df['Time_Days']
+time_label = "Date" if date_format else "Time (days)"
+
+fig, ax = plt.subplots(figsize=(16, 8))
+
+# Plot individual cell time series with thin lines and transparency
+for label in cell_labels:
+    ax.plot(time_axis, df[label], label=label, linewidth=1, alpha=0.7)
+
+# Plot mean time series with thick, prominent line
+ax.plot(time_axis, df['Mean_All_Cells'], label='Mean (All Cells)',
+        linewidth=3, color='red', linestyle='--', alpha=0.9, zorder=100)
+
+ax.set_xlabel(time_label, fontsize=14)
+ax.set_ylabel("Groundwater Head (m)", fontsize=14)
+ax.set_title(f"Groundwater Head Time Series (n={len(cell_labels)} cells)",
+             fontsize=16, pad=15)
+
+# Adjust legend to handle many cells
+if len(cell_labels) > 15:
+    # Put legend outside plot area for many cells
+    ax.legend(fontsize=6, loc='center left', bbox_to_anchor=(1, 0.5),
+              ncol=2, framealpha=0.9)
+else:
+    ax.legend(fontsize=10, loc='best', framealpha=0.9)
+
+ax.grid(True, alpha=0.3)
+ax.tick_params(labelsize=12)
+
+if date_format:
+    fig.autofmt_xdate()
+
+plt.tight_layout()
+
+combined_file = os.path.join(output_folder, "head_timeseries_with_mean.png")
+plt.savefig(combined_file, dpi=300, bbox_inches='tight')
+print(f"\n✓ Plot saved to: {combined_file}")
+plt.show()
+
+print("\n" + "=" * 60)
+print("ALL OPERATIONS COMPLETED SUCCESSFULLY!")
+print("=" * 60)
