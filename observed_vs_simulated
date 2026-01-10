@@ -1,0 +1,221 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_squared_error, r2_score
+import numpy as np
+from matplotlib.ticker import AutoMinorLocator
+import os
+from datetime import datetime, timedelta
+import matplotlib.dates as mdates
+
+# ==========================================================
+# SET STYLE
+# ==========================================================
+plt.style.use("ggplot")
+
+# ==========================================================
+# USER PATHS
+# ==========================================================
+model_ws = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip\t3a_ip2_MODFLOW"
+model_name = "t3a_ip2"
+
+hob_file = rf"{model_ws}\{model_name}.hob"
+out_file = rf"{model_ws}\{model_name}.out"
+
+# ==========================================================
+# RESULTS FOLDER (OUTSIDE MODEL FOLDER)
+# ==========================================================
+results_root = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip"
+results_folder = rf"{results_root}\results"
+os.makedirs(results_folder, exist_ok=True)
+
+output_csv = rf"{results_folder}\obs_vs_simulated_heads.csv"
+output_plot_ts = rf"{results_folder}\obs_sim_timeseries.png"
+output_plot_scatter = rf"{results_folder}\obs_sim_scatter.png"
+
+# ==========================================================
+# READ TIMES FROM HOB FILE
+# ==========================================================
+print("=" * 80)
+print("Reading times from HOB file:")
+print("=" * 80)
+
+hob_times = {}
+
+with open(hob_file, 'r') as f:
+    for line in f:
+        if line.startswith("#GMSCOMMENT"):
+            parts = line.strip().split()
+            if len(parts) >= 2:
+                try:
+                    time_val = float(parts[-2])
+                    obs_name = parts[-1]
+                    hob_times[obs_name] = time_val
+                except (ValueError, IndexError):
+                    continue
+
+print(f"Found {len(hob_times)} observation times")
+print(f"Time range: {min(hob_times.values()):.1f} to {max(hob_times.values()):.1f}")
+
+# ==========================================================
+# EXCEL TIME → DATE CONVERSION
+# ==========================================================
+reference_date = datetime(1900, 1, 1)
+
+def convert_excel_time_to_date(excel_time):
+    if excel_time >= 60:
+        excel_time -= 1
+    return reference_date + timedelta(days=excel_time - 2)
+
+# ==========================================================
+# READ MODFLOW OUTPUT (OBSERVED + SIMULATED)
+# ==========================================================
+def read_modflow_out_simple(file_path):
+    sim_data = []
+
+    with open(file_path, 'r') as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 3:
+                try:
+                    obsname = parts[0]
+                    if obsname.startswith("hed"):
+                        observed = float(parts[1])
+                        simulated = float(parts[2])
+                        if observed > 0:
+                            sim_data.append({
+                                "obsname": obsname,
+                                "observed": observed,
+                                "simulated": simulated
+                            })
+                except:
+                    continue
+
+    return pd.DataFrame(sim_data)
+
+# ==========================================================
+# PROCESS DATA
+# ==========================================================
+print("\n" + "=" * 80)
+print("Reading MODFLOW output file...")
+print("=" * 80)
+
+df = read_modflow_out_simple(out_file)
+
+if df.empty:
+    raise RuntimeError("No observation data found in MODFLOW output file.")
+
+df["time_days"] = df["obsname"].map(hob_times)
+
+missing = df[df["time_days"].isna()]
+if len(missing) > 0:
+    print(f"Warning: {len(missing)} observations missing time. Filling.")
+    df["time_days"] = df["time_days"].fillna(method="ffill").fillna(method="bfill")
+
+df["date"] = df["time_days"].apply(convert_excel_time_to_date)
+df = df.sort_values("time_days").reset_index(drop=True)
+
+print(df.head())
+
+# ==========================================================
+# SAVE CSV
+# ==========================================================
+df_out = df[["obsname", "time_days", "date", "observed", "simulated"]]
+df_out.to_csv(output_csv, index=False)
+print(f"\nCSV saved at: {output_csv}")
+
+# ==========================================================
+# METRICS
+# ==========================================================
+observed = df["observed"].values
+simulated = df["simulated"].values
+
+rmse = np.sqrt(mean_squared_error(observed, simulated))
+mae = np.mean(np.abs(observed - simulated))
+r2 = r2_score(observed, simulated)
+nse = 1 - np.sum((observed - simulated)**2) / np.sum((observed - np.mean(observed))**2)
+
+print("\n==== MODEL PERFORMANCE METRICS ====")
+print(f"RMSE : {rmse:.3f}")
+print(f"MAE  : {mae:.3f}")
+print(f"R²   : {r2:.3f}")
+print(f"NSE  : {nse:.3f}")
+
+# ==========================================================
+# PLOT 1: TIME SERIES
+# ==========================================================
+fig, ax = plt.subplots(figsize=(12, 6))
+
+ax.plot(df["date"], df["observed"],
+       linewidth=4,  color='#008fd5',
+        label="Observed Head")
+
+ax.plot(df["date"], df["simulated"]
+      , linewidth=4, color='#fc4f30',
+        label="Simulated Head")
+
+ax.xaxis.set_major_formatter(mdates.DateFormatter("%b-%Y"))
+ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+plt.xticks(rotation=90)
+
+ax.set_xlabel("", fontsize=22)
+ax.set_ylabel("Groundwater Head (m)", fontsize=22)
+ax.tick_params(axis="both", labelsize=16)
+ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+
+metrics_text = f"R² = {r2:.2f}    RMSE = {rmse:.2f} m"
+ax.text(0.97, 0.97, metrics_text,
+        transform=ax.transAxes,
+        fontsize=16,
+        verticalalignment="top",
+        horizontalalignment="right",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
+
+ax.legend(fontsize=16)
+plt.grid(True, alpha=0.5)
+plt.tight_layout()
+plt.savefig(output_plot_ts, dpi=1000)
+plt.show()
+
+print(f"Time series plot saved at: {output_plot_ts}")
+
+# ==========================================================
+# PLOT 2: SCATTER
+# ==========================================================
+fig, ax = plt.subplots(figsize=(8, 6))
+
+ax.scatter(observed, simulated,
+           alpha=0.6, s=50, marker="^",
+           edgecolors="black")
+
+min_val = min(observed.min(), simulated.min())
+max_val = max(observed.max(), simulated.max())
+
+ax.plot([min_val, max_val], [min_val, max_val],
+        "k-", linewidth=3, label="1:1 Line")
+
+ax.set_xlabel("Observed Head (m)", fontsize=22)
+ax.set_ylabel("Simulated Head (m)", fontsize=22)
+ax.tick_params(axis="both", labelsize=18)
+ax.xaxis.set_minor_locator(AutoMinorLocator(2))
+ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+
+stats_text = f"R² = {r2:.2f}\nRMSE = {rmse:.2f} m\nn = {len(df)}"
+ax.text(0.97, 0.03, stats_text,
+        transform=ax.transAxes,
+        fontsize=16,
+        verticalalignment="bottom",
+        horizontalalignment="right",
+        bbox=dict(facecolor="white", alpha=0.7))
+
+ax.legend(fontsize=16)
+plt.grid(True, alpha=0.5)
+plt.tight_layout()
+plt.savefig(output_plot_scatter, dpi=1000)
+plt.show()
+
+print(f"Scatter plot saved at: {output_plot_scatter}")
+
+print("\n" + "=" * 80)
+print("ALL RESULTS SAVED IN:")
+print(results_folder)
+print("=" * 80)
