@@ -1,0 +1,585 @@
+""" Gives you water budget time series components from a MODFLOW -2005 simulation.
+When both storage in and storage out are represented in +ve absolute values, then if storage in -storage out if negative means
+aquifer is gaining water and water levels are rising.
+absolute storage_in represents water levels falling and aquifer losing water
+absolute storage out means water levels rising and aquifer gaining water.
+from the flow system water is moving out to the storage
+"""
+
+
+"""" This code will work well only for full budget of model domain, when all cells are used
+It is not a zone budget code"""
+
+
+##################
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+from flopy.utils import CellBudgetFile
+import os
+
+# -------------------------------------------------------
+# USER INPUT
+# -------------------------------------------------------
+model_ws = r"C:\Users\ankush kaundal\Desktop\test2\t3a_ip\t3a_ip2_MODFLOW"
+model_name = "t3a_ip2"
+
+ccf_file = os.path.join(model_ws, f"{model_name}.ccf")
+hob_file = os.path.join(model_ws, f"{model_name}.hob")
+
+# -------------------------------------------------------
+# SIMULATION START DATE
+# -------------------------------------------------------
+# Set your simulation start date here
+simulation_start_date = datetime(2010, 1, 1)  # January 1, 2010
+
+# Results folder (created outside MODFLOW folder)
+parent_folder = os.path.dirname(model_ws)
+results_folder = os.path.join(parent_folder, "results")
+csv_output = os.path.join(results_folder, "budget_timeseries_time_stamps_4.csv")
+
+# Create results folder
+os.makedirs(results_folder, exist_ok=True)
+print(f"Results will be saved to: {results_folder}\n")
+
+# -------------------------------------------------------
+# CELL SELECTION OPTIONS
+# -------------------------------------------------------
+# Option 1: Set to None for ALL CELLS (entire model domain)
+# Option 2: Provide a list of cell/node numbers for SPECIFIC CELLS
+
+selected_cells = None  # <-- ALL CELLS
+# selected_cells = [455]  # <-- SINGLE CELL
+# selected_cells = [1481, 1487, 1490, 1434 ]  # <-- MULTIPLE CELLS
+# selected_cells = list(range(100, 200))  # <-- RANGE OF CELLS
+
+# -------------------------------------------------------
+# READ STRESS PERIOD DATA WITH REFERENCE TIMES
+# -------------------------------------------------------
+print("\n" + "=" * 70)
+print("Reading stress period reference times...")
+print("=" * 70)
+
+# Look for a file with stress period information (often in .dis or separate file)
+# The format you showed: date, days, stress_period
+# 01-01-2010 00:00:00	31.0	1
+# 01-02-2010 00:00:00	28.0	1
+
+stress_period_data = []  # List of (date, days, sp_number)
+
+# Try to find stress period file
+possible_files = [
+    os.path.join(model_ws, "stress_periods.txt"),
+    os.path.join(model_ws, f"{model_name}_stress_periods.txt"),
+    os.path.join(model_ws, "sp_data.txt"),
+]
+
+sp_file_found = None
+for sp_file in possible_files:
+    if os.path.exists(sp_file):
+        sp_file_found = sp_file
+        break
+
+# If not found, try to read from DIS file comments
+if sp_file_found is None:
+    dis_file = os.path.join(model_ws, f"{model_name}.dis")
+    if os.path.exists(dis_file):
+        sp_file_found = dis_file
+
+if sp_file_found:
+    try:
+        print(f"Reading from: {sp_file_found}")
+        with open(sp_file_found, 'r') as f:
+            for line in f:
+                # Skip empty lines
+                if not line.strip():
+                    continue
+
+                # Look for lines with date, days, and stress period
+                # Format: 01-01-2010 00:00:00	31.0	1
+                parts = line.strip().split()
+
+                if len(parts) >= 3:
+                    try:
+                        # Try to parse date (multiple formats)
+                        date_str = parts[0]
+                        time_str = parts[1] if len(parts) > 1 and ':' in parts[1] else "00:00:00"
+
+                        # Try different date formats
+                        for date_format in ['%d-%m-%Y', '%m-%d-%Y', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']:
+                            try:
+                                date_obj = datetime.strptime(date_str, date_format)
+                                break
+                            except:
+                                continue
+
+                        # Find the days value (float)
+                        days_val = None
+                        sp_num = None
+                        for part in parts[1:]:
+                            try:
+                                val = float(part)
+                                if days_val is None:
+                                    days_val = val
+                                else:
+                                    sp_num = int(val)
+                                    break
+                            except:
+                                continue
+
+                        if days_val is not None:
+                            stress_period_data.append((date_obj, days_val, sp_num))
+                    except:
+                        continue
+
+        if len(stress_period_data) > 0:
+            print(f"✓ Found {len(stress_period_data)} stress period dates")
+            print(f"  First date: {stress_period_data[0][0].strftime('%Y-%m-%d')}")
+            print(f"  Last date: {stress_period_data[-1][0].strftime('%Y-%m-%d')}")
+            print(f"  First few: ")
+            for i in range(min(5, len(stress_period_data))):
+                print(
+                    f"    {stress_period_data[i][0].strftime('%d-%m-%Y')} | {stress_period_data[i][1]:.1f} days | SP {stress_period_data[i][2]}")
+            use_sp_dates = True
+        else:
+            use_sp_dates = False
+    except Exception as e:
+        print(f"⚠ Error reading stress period file: {e}")
+        use_sp_dates = False
+else:
+    print("⚠ No stress period file found")
+    print("  Please create a file with format: date days stress_period")
+    print("  Example: 01-01-2010 00:00:00	31.0	1")
+    use_sp_dates = False
+
+# -------------------------------------------------------
+# LOAD CCF AND DISCOVER BUDGET TERMS
+# -------------------------------------------------------
+print("\n" + "=" * 70)
+print("Loading Cell-by-Cell budget file...")
+print("=" * 70)
+
+cbc = CellBudgetFile(ccf_file)
+
+# Get available budget terms
+try:
+    records = cbc.list_records()
+    if records is None:
+        term_raw = cbc.get_unique_record_names()
+        term_names = [t.strip().decode() if isinstance(t, bytes) else t.strip()
+                      for t in term_raw]
+    else:
+        clean = [r for r in records if isinstance(r, tuple)]
+        term_names = sorted({r[2].strip().decode() if isinstance(r[2], bytes) else r[2].strip()
+                             for r in clean})
+except:
+    # Fallback method
+    term_names = []
+    print("⚠ Could not automatically detect budget terms")
+
+print(f"\nFlow terms available:")
+for t in term_names:
+    print(f" → {t}")
+
+# -------------------------------------------------------
+# DETERMINE NUMBER OF TIME STEPS AND STRESS PERIODS
+# -------------------------------------------------------
+# Get all time steps from CCF file
+print("\nAnalyzing stress periods and time steps...")
+
+all_kstpkper = []
+try:
+    # Get list of all (kstp, kper) combinations in the file
+    times = cbc.get_times()
+    kstpkper_list = cbc.get_kstpkper()
+
+    print(f"Found {len(kstpkper_list)} time step/stress period combinations")
+    print(f"First few (timestep, stress_period): {kstpkper_list[:5]}")
+
+    ntimes = len(kstpkper_list)
+    all_kstpkper = kstpkper_list
+
+except Exception as e:
+    print(f"Error getting times: {e}")
+    # Fallback: try to count manually
+    ntimes = 0
+    test_term = term_names[0] if term_names else 'STORAGE'
+    try:
+        data = cbc.get_data(text=test_term)
+        ntimes = len(data) if data else 0
+        # Create default kstpkper list
+        all_kstpkper = [(0, i) for i in range(ntimes)]
+    except:
+        pass
+
+if ntimes == 0:
+    print("\n⚠ ERROR: Could not determine number of time steps!")
+    exit()
+
+print(f"\nTotal time steps to extract: {ntimes}")
+
+# -------------------------------------------------------
+# CREATE TIME/DATE LABELS FROM STRESS PERIOD DATA
+# -------------------------------------------------------
+print("\n" + "=" * 70)
+print("Creating time series dates...")
+print("=" * 70)
+
+dates = []
+date_labels = []
+month_year = []
+time_labels = []
+
+if use_sp_dates and len(stress_period_data) > 0:
+    print(f"Using stress period reference dates")
+
+    # Map stress periods to dates
+    sp_date_map = {sp: (date, days) for date, days, sp in stress_period_data}
+
+    # For each timestep, find the corresponding stress period and date
+    for idx, (kstp, kper) in enumerate(all_kstpkper):
+        sp_num = kper + 1  # Convert to 1-based
+
+        if sp_num in sp_date_map:
+            date_obj, days = sp_date_map[sp_num]
+        elif len(stress_period_data) > 0:
+            # Use the last known date if stress period not found
+            date_obj, days = stress_period_data[-1][0], stress_period_data[-1][1]
+        else:
+            # Fallback
+            date_obj = simulation_start_date
+            days = idx * 30
+
+        dates.append(date_obj)
+        date_labels.append(date_obj.strftime("%d/%m/%Y"))
+        month_year.append(date_obj.strftime("%b-%Y"))
+
+        # Calculate cumulative days from start
+        if len(stress_period_data) > 0:
+            start_date = stress_period_data[0][0]
+            cumulative = (date_obj - start_date).days
+            time_labels.append(cumulative)
+        else:
+            time_labels.append(idx)
+
+    print(f"✓ Generated {len(dates)} dates")
+    print(f"  Start: {dates[0].strftime('%d-%m-%Y')}")
+    print(f"  End: {dates[-1].strftime('%d-%m-%Y')}")
+    if len(time_labels) > 0:
+        print(f"  Total simulation time: {time_labels[-1]} days")
+
+else:
+    # Fallback: Use simulation start date and monthly increments
+    print(f"⚠ Using fallback monthly dates from {simulation_start_date.strftime('%Y-%m-%d')}")
+
+    current_date = simulation_start_date
+    for idx in range(ntimes):
+        dates.append(current_date)
+        date_labels.append(current_date.strftime("%d/%m/%Y"))
+        month_year.append(current_date.strftime("%b-%Y"))
+        time_labels.append((current_date - simulation_start_date).days)
+
+        # Add one month
+        if current_date.month == 12:
+            current_date = datetime(current_date.year + 1, 1, current_date.day)
+        else:
+            # Handle varying month lengths
+            try:
+                current_date = datetime(current_date.year, current_date.month + 1, current_date.day)
+            except:
+                # Day doesn't exist in next month (e.g., Jan 31 -> Feb 28/29)
+                next_month = current_date.month + 1
+                next_year = current_date.year
+                if next_month > 12:
+                    next_month = 1
+                    next_year += 1
+                # Use last day of next month
+                import calendar
+
+                last_day = calendar.monthrange(next_year, next_month)[1]
+                current_date = datetime(next_year, next_month, min(current_date.day, last_day))
+
+# Display cell selection mode
+if selected_cells is None:
+    print("\n🌍 EXTRACTION MODE: ALL CELLS (entire model domain)\n")
+else:
+    print(f"\n📍 EXTRACTION MODE: SELECTED CELLS {selected_cells}\n")
+
+# Prepare dataframe with stress period information
+stress_periods = [kper + 1 for kstp, kper in all_kstpkper]  # Convert to 1-based
+time_steps = [kstp + 1 for kstp, kper in all_kstpkper]
+
+df = pd.DataFrame({
+    "timestep": time_steps,
+    "stress_period": stress_periods,
+    "time_days": time_labels,
+    "date": date_labels,
+    "month_year": month_year
+})
+
+
+# -------------------------------------------------------
+# HELPER FUNCTION TO CONVERT 3D INDICES TO 1D
+# -------------------------------------------------------
+def get_node_number(k, i, j, nrow, ncol):
+    """Convert layer, row, col to 1D node number (0-based)"""
+    return k * nrow * ncol + i * ncol + j
+
+
+# Try to get model dimensions from the first available array
+nlay, nrow, ncol = None, None, None
+for term in term_names:
+    try:
+        data_list = cbc.get_data(text=term, kstpkper=all_kstpkper[0])
+        if data_list:
+            arr = data_list[0]
+            if isinstance(arr, np.ndarray) and arr.dtype.names is None and arr.ndim == 3:
+                nlay, nrow, ncol = arr.shape
+                print(f"\nModel dimensions detected: {nlay} layers × {nrow} rows × {ncol} columns")
+                break
+    except:
+        continue
+
+# -------------------------------------------------------
+# LOOP THROUGH BUDGET TERMS AND EXTRACT IN/OUT FLUX
+# -------------------------------------------------------
+print("=" * 70)
+print("Extracting budget components...")
+print("=" * 70)
+
+for term in term_names:
+    print(f"Extracting: {term}")
+    vals_in = []
+    vals_out = []
+
+    for idx, (kstp, kper) in enumerate(all_kstpkper):
+        try:
+            # Extract data for this specific time step and stress period
+            data_list = cbc.get_data(text=term, kstpkper=(kstp, kper), full3D=True)
+
+            if not data_list:
+                vals_in.append(0.0)
+                vals_out.append(0.0)
+                continue
+
+            arr = data_list[0]
+
+            # Skip if no data
+            if arr is None or (isinstance(arr, np.ndarray) and arr.size == 0):
+                vals_in.append(0.0)
+                vals_out.append(0.0)
+                continue
+
+            # CASE 1: 3D NDARRAY (STORAGE, CONSTANT HEAD, FLOW-RIGHT-FACE, etc.)
+            if isinstance(arr, np.ndarray) and arr.dtype.names is None:
+                # Flatten the array
+                q = arr.flatten()
+
+                ## ALL CELLS
+                if selected_cells is None:
+                    q_in = q[q > 0].sum()
+                    q_out = abs(q[q < 0].sum())
+
+                ## SPECIFIC CELLS
+                else:
+                    if len(q) > max(selected_cells):
+                        q_sel = q[selected_cells]
+                        q_in = q_sel[q_sel > 0].sum()
+                        q_out = abs(q_sel[q_sel < 0].sum())
+                    else:
+                        q_in = 0.0
+                        q_out = 0.0
+
+                vals_in.append(float(q_in))
+                vals_out.append(float(q_out))
+
+            # CASE 2: RECARRAY (boundary conditions: DRN, GHB, RCH, ETS, WEL, RIV)
+            elif isinstance(arr, np.ndarray) and arr.dtype.names is not None:
+                if 'q' in arr.dtype.names:
+                    q = arr['q'].copy()
+
+                    # Get cell indices for MODFLOW 2005 format
+                    if 'k' in arr.dtype.names and 'i' in arr.dtype.names and 'j' in arr.dtype.names:
+                        # MODFLOW 2005: has k, i, j (0-based in recarray)
+                        k_vals = arr['k']
+                        i_vals = arr['i']
+                        j_vals = arr['j']
+
+                        if nlay is not None and nrow is not None and ncol is not None:
+                            # Convert to 1D node numbers
+                            nodes = np.array([get_node_number(k, i, j, nrow, ncol)
+                                              for k, i, j in zip(k_vals, i_vals, j_vals)])
+                        else:
+                            # Fallback: use sequential indexing
+                            nodes = np.arange(len(q))
+                    elif 'node' in arr.dtype.names:
+                        # MODFLOW 6 or node-based
+                        nodes = arr['node']
+                    elif 'cellid' in arr.dtype.names:
+                        nodes = arr['cellid']
+                    else:
+                        # Fallback
+                        nodes = np.arange(len(q))
+
+                    ## ALL CELLS
+                    if selected_cells is None:
+                        # Apply correct sign convention
+                        # MODFLOW convention:
+                        # - Positive q = flow INTO aquifer (recharge, river leakage in)
+                        # - Negative q = flow OUT OF aquifer (ET, drains, wells pumping)
+                        q_in = q[q > 0].sum()
+                        q_out = abs(q[q < 0].sum())
+
+                    ## SPECIFIC CELLS
+                    else:
+                        mask = np.isin(nodes, selected_cells)
+                        q_sel = q[mask]
+                        q_in = q_sel[q_sel > 0].sum()
+                        q_out = abs(q_sel[q_sel < 0].sum())
+
+                    vals_in.append(float(q_in))
+                    vals_out.append(float(q_out))
+                else:
+                    vals_in.append(0.0)
+                    vals_out.append(0.0)
+
+            else:
+                vals_in.append(0.0)
+                vals_out.append(0.0)
+
+        except Exception as e:
+            # If term doesn't exist for this time (e.g., STORAGE in steady state), use 0
+            vals_in.append(0.0)
+            vals_out.append(0.0)
+            if idx == 0:  # Only print warning for first occurrence
+                print(f"  Note: {term} not found for stress period {kper + 1}, timestep {kstp + 1}")
+                print(f"        Error: {str(e)}")
+
+    # Add IN and OUT columns
+    df[f"{term}_IN"] = vals_in
+    df[f"{term}_OUT"] = vals_out
+
+# -------------------------------------------------------
+# CALCULATE TOTAL IN/OUT AND BALANCE
+# -------------------------------------------------------
+# Define internal flow terms that should be EXCLUDED from totals
+# These represent cell-to-cell flows within the model domain
+INTERNAL_FLOW_TERMS = [
+    'FLOW-JA-FACE',  # MODFLOW 6
+    'FLOW RIGHT FACE',  # MODFLOW 2005
+    'FLOW FRONT FACE',  # MODFLOW 2005
+    'FLOW LOWER FACE',  # MODFLOW 2005
+    'FLOW-LOWER-FACE',  # Alternative naming
+    'FLOW-RIGHT-FACE',  # Alternative naming
+    'FLOW-FRONT-FACE',  # Alternative naming
+]
+
+# Get all IN/OUT columns, excluding internal flows
+in_cols = [col for col in df.columns if col.endswith('_IN')
+           and not any(term in col for term in INTERNAL_FLOW_TERMS)]
+out_cols = [col for col in df.columns if col.endswith('_OUT')
+            and not any(term in col for term in INTERNAL_FLOW_TERMS)]
+
+print("\n" + "=" * 70)
+print("BUDGET COMPONENTS INCLUDED IN TOTALS:")
+print("=" * 70)
+print("IN components:")
+for col in in_cols:
+    print(f"  ✓ {col}")
+print("\nOUT components:")
+for col in out_cols:
+    print(f"  ✓ {col}")
+
+# Sum all IN components (excluding internal flows)
+df['TOTAL_IN'] = df[in_cols].sum(axis=1)
+
+# Sum all OUT components (excluding internal flows)
+df['TOTAL_OUT'] = df[out_cols].sum(axis=1)
+
+# Calculate balance (should be close to zero for mass balance)
+df['BALANCE'] = df['TOTAL_IN'] - df['TOTAL_OUT']
+
+# Calculate percent discrepancy
+df['PERCENT_DISCREPANCY'] = np.where(
+    (df['TOTAL_IN'] + df['TOTAL_OUT']) > 0,
+    100 * df['BALANCE'] / (0.5 * (df['TOTAL_IN'] + df['TOTAL_OUT'])),
+    0.0
+)
+
+# -------------------------------------------------------
+# SAVE CSV
+# -------------------------------------------------------
+df.to_csv(csv_output, index=False)
+print(f"\n{'=' * 70}")
+print(f"✔ Successfully saved budget timeseries:")
+print(f"  {csv_output}")
+print(f"{'=' * 70}")
+
+print(f"\nColumns extracted ({len(df.columns)} total):")
+print(f"  {list(df.columns)}")
+
+print(f"\nFirst few rows:")
+print(df.head())
+
+# Display summary statistics
+print("\n" + "=" * 70)
+print("SUMMARY STATISTICS (Total over all time steps)")
+print("=" * 70)
+for col in df.columns:
+    if col not in ['timestep', 'stress_period', 'time_days', 'date', 'month_year']:
+        total_val = df[col].sum()
+        print(f"{col:35s}: {total_val:15,.2f}")
+
+# Check mass balance
+print("\n" + "=" * 70)
+print("MASS BALANCE CHECK")
+print("=" * 70)
+avg_discrepancy = df['PERCENT_DISCREPANCY'].abs().mean()
+max_discrepancy = df['PERCENT_DISCREPANCY'].abs().max()
+print(f"Average percent discrepancy: {avg_discrepancy:.4f}%")
+print(f"Maximum percent discrepancy: {max_discrepancy:.4f}%")
+if max_discrepancy < 1.0:
+    print("✓ Mass balance looks good (< 1% discrepancy)")
+elif max_discrepancy < 5.0:
+    print("⚠ Mass balance acceptable but check results (1-5% discrepancy)")
+else:
+    print("⚠ WARNING: Large mass balance error (> 5% discrepancy)")
+    print("   Check model convergence and budget calculations")
+
+# Save info file
+info_file = csv_output.replace('.csv', '_info.txt')
+with open(info_file, 'w') as f:
+    f.write(f"MODFLOW 2005 Budget Extraction Information\n")
+    f.write(f"{'=' * 50}\n")
+    f.write(f"Model folder: {model_ws}\n")
+    f.write(f"CCF file: {ccf_file}\n")
+    if use_sp_dates:
+        f.write(f"Date source: Stress period reference file\n")
+        if len(stress_period_data) > 0:
+            f.write(f"Simulation start date: {stress_period_data[0][0].strftime('%Y-%m-%d')}\n")
+            f.write(f"Simulation end date: {stress_period_data[-1][0].strftime('%Y-%m-%d')}\n")
+    else:
+        f.write(f"Date source: Fallback (monthly increments)\n")
+        f.write(f"Simulation start date: {simulation_start_date.strftime('%Y-%m-%d')}\n")
+    if dates:
+        f.write(f"First timestep date: {dates[0].strftime('%Y-%m-%d')}\n")
+        f.write(f"Last timestep date: {dates[-1].strftime('%Y-%m-%d')}\n")
+    if selected_cells is not None:
+        f.write(f"Selected cells: {selected_cells}\n")
+        f.write(f"Number of cells: {len(selected_cells)}\n")
+    else:
+        f.write(f"Extraction mode: ALL CELLS\n")
+    if nlay is not None:
+        f.write(f"Model dimensions: {nlay} layers × {nrow} rows × {ncol} columns\n")
+    f.write(f"Time steps: {ntimes}\n")
+    f.write(f"Stress periods: {len(set(stress_periods))}\n")
+    f.write(f"Budget terms: {', '.join(term_names)}\n")
+    f.write(f"Output file: {csv_output}\n")
+    f.write(f"\nMass Balance:\n")
+    f.write(f"  Average discrepancy: {avg_discrepancy:.4f}%\n")
+    f.write(f"  Maximum discrepancy: {max_discrepancy:.4f}%\n")
+
+print(f"\nInfo saved to: {info_file}")
+print("\n" + "=" * 70)
+print("EXTRACTION COMPLETE")
+print("=" * 70)
