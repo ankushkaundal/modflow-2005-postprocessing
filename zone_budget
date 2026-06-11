@@ -218,7 +218,7 @@ df_clean = df_clean[col_order]
 # =======================================================
 csv_output = os.path.join(results_folder, f"zonebudget_n_{zone_label}.csv")
 df_clean.to_csv(csv_output, index=False)
-print(f"\n✔ Budget saved to:\n  {csv_output}")
+print(f"\n Budget saved to:\n  {csv_output}")
 
 # Display first few rows
 print("\nFirst 5 rows of output:")
