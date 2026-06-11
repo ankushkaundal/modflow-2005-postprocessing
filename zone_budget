@@ -67,14 +67,14 @@ zone_array = np.ones((nlay, nrow, ncol), dtype=np.int32)
 if use_all_cells:
     # All cells as Zone 2
     zone_array[:] = 2
-    print(f"✓ MODE: ALL CELLS")
+    print(f" MODE: ALL CELLS")
     print(f"  Zone 2: All {total_cells} cells")
     target_zone = 2
     zone_label = "all"
 
 elif use_multiple_cells:
     # Multiple specific cells
-    print(f"✓ MODE: MULTIPLE CELLS")
+    print(f" MODE: MULTIPLE CELLS")
     print(f"  Zone 1 (background): {total_cells - len(TARGET_CELLS)} cells")
     print(f"  Zone 2 (targets): {len(TARGET_CELLS)} cells")
     print(f"    Cells: {TARGET_CELLS}")
@@ -91,7 +91,7 @@ else:
     cell_idx = TARGET_CELL - 1
     zone_array.ravel()[cell_idx] = 2
 
-    print(f"✓ MODE: SINGLE CELL")
+    print(f" MODE: SINGLE CELL")
     print(f"  Zone 1 (background): {total_cells - 1} cells")
     print(f"  Zone 2 (target): Cell {TARGET_CELL} (0-based index: {cell_idx})")
 
@@ -106,7 +106,7 @@ print("LOADING ZONEBUDGET")
 print("=" * 80)
 
 zb = ZoneBudget(ccf_file, zone_array)
-print("✓ ZoneBudget loaded successfully")
+print(" ZoneBudget loaded successfully")
 
 # =======================================================
 # EXTRACT ZONE BUDGET DATA
