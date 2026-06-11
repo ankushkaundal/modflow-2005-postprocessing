@@ -191,7 +191,7 @@ if save_csv:
     os.makedirs(output_folder, exist_ok=True)
     csv_file = os.path.join(output_folder, "head_timeseries.csv")
     df.to_csv(csv_file, index=False)
-    print(f"\n✓ CSV saved to: {csv_file}")
+    print(f"\n CSV saved to: {csv_file}")
 
     # Also save metadata
     metadata_file = os.path.join(output_folder, "head_timeseries_metadata.txt")
@@ -208,7 +208,7 @@ if save_csv:
             f.write(f"{label}:\n")
             f.write(f"  Grid: Row {row}, Col {col}\n")
             f.write(f"  UTM: X={x_utm:.0f}, Y={y_utm:.0f}\n\n")
-    print(f"✓ Metadata saved to: {metadata_file}")
+    print(f" Metadata saved to: {metadata_file}")
 
 # -------------------------------------------------------
 # PLOTTING - COMBINED PLOT WITH MEAN
@@ -249,7 +249,7 @@ plt.tight_layout()
 
 combined_file = os.path.join(output_folder, "head_timeseries_with_mean.png")
 plt.savefig(combined_file, dpi=300, bbox_inches='tight')
-print(f"\n✓ Plot saved to: {combined_file}")
+print(f"\n Plot saved to: {combined_file}")
 plt.show()
 
 print("\n" + "=" * 60)
