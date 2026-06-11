@@ -247,7 +247,7 @@ cbar.ax.tick_params(labelsize=15.5)
 os.makedirs(output_folder, exist_ok=True)
 output_path = os.path.join(output_folder, output_file)
 plt.savefig(output_path, dpi=500, bbox_inches='tight')
-print(f"\n✓ Success! Plot saved to: {output_path}")
+print(f"\n Success! Plot saved to: {output_path}")
 plt.show()
 
 
