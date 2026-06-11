@@ -6,7 +6,6 @@ absolute storage out means water levels rising and aquifer gaining water.
 from the flow system water is moving out to the storage
 """
 
-
 """" This code will work well only for full budget of model domain, when all cells are used
 It is not a zone budget code"""
 
@@ -133,7 +132,7 @@ if sp_file_found:
                         continue
 
         if len(stress_period_data) > 0:
-            print(f"✓ Found {len(stress_period_data)} stress period dates")
+            print(f" Found {len(stress_period_data)} stress period dates")
             print(f"  First date: {stress_period_data[0][0].strftime('%Y-%m-%d')}")
             print(f"  Last date: {stress_period_data[-1][0].strftime('%Y-%m-%d')}")
             print(f"  First few: ")
@@ -144,10 +143,10 @@ if sp_file_found:
         else:
             use_sp_dates = False
     except Exception as e:
-        print(f"⚠ Error reading stress period file: {e}")
+        print(f" Error reading stress period file: {e}")
         use_sp_dates = False
 else:
-    print("⚠ No stress period file found")
+    print(" No stress period file found")
     print("  Please create a file with format: date days stress_period")
     print("  Example: 01-01-2010 00:00:00	31.0	1")
     use_sp_dates = False
@@ -175,7 +174,7 @@ try:
 except:
     # Fallback method
     term_names = []
-    print("⚠ Could not automatically detect budget terms")
+    print(" Could not automatically detect budget terms")
 
 print(f"\nFlow terms available:")
 for t in term_names:
@@ -213,7 +212,7 @@ except Exception as e:
         pass
 
 if ntimes == 0:
-    print("\n⚠ ERROR: Could not determine number of time steps!")
+    print("\n ERROR: Could not determine number of time steps!")
     exit()
 
 print(f"\nTotal time steps to extract: {ntimes}")
@@ -262,7 +261,7 @@ if use_sp_dates and len(stress_period_data) > 0:
         else:
             time_labels.append(idx)
 
-    print(f"✓ Generated {len(dates)} dates")
+    print(f"  Generated {len(dates)} dates")
     print(f"  Start: {dates[0].strftime('%d-%m-%Y')}")
     print(f"  End: {dates[-1].strftime('%d-%m-%Y')}")
     if len(time_labels) > 0:
@@ -270,7 +269,7 @@ if use_sp_dates and len(stress_period_data) > 0:
 
 else:
     # Fallback: Use simulation start date and monthly increments
-    print(f"⚠ Using fallback monthly dates from {simulation_start_date.strftime('%Y-%m-%d')}")
+    print(f" Using fallback monthly dates from {simulation_start_date.strftime('%Y-%m-%d')}")
 
     current_date = simulation_start_date
     for idx in range(ntimes):
@@ -301,9 +300,9 @@ else:
 
 # Display cell selection mode
 if selected_cells is None:
-    print("\n🌍 EXTRACTION MODE: ALL CELLS (entire model domain)\n")
+    print("\n EXTRACTION MODE: ALL CELLS (entire model domain)\n")
 else:
-    print(f"\n📍 EXTRACTION MODE: SELECTED CELLS {selected_cells}\n")
+    print(f"\n EXTRACTION MODE: SELECTED CELLS {selected_cells}\n")
 
 # Prepare dataframe with stress period information
 stress_periods = [kper + 1 for kstp, kper in all_kstpkper]  # Convert to 1-based
@@ -485,10 +484,10 @@ print("BUDGET COMPONENTS INCLUDED IN TOTALS:")
 print("=" * 70)
 print("IN components:")
 for col in in_cols:
-    print(f"  ✓ {col}")
+    print(f"  {col}")
 print("\nOUT components:")
 for col in out_cols:
-    print(f"  ✓ {col}")
+    print(f"  {col}")
 
 # Sum all IN components (excluding internal flows)
 df['TOTAL_IN'] = df[in_cols].sum(axis=1)
@@ -511,7 +510,7 @@ df['PERCENT_DISCREPANCY'] = np.where(
 # -------------------------------------------------------
 df.to_csv(csv_output, index=False)
 print(f"\n{'=' * 70}")
-print(f"✔ Successfully saved budget timeseries:")
+print(f"Successfully saved budget timeseries:")
 print(f"  {csv_output}")
 print(f"{'=' * 70}")
 
@@ -539,11 +538,11 @@ max_discrepancy = df['PERCENT_DISCREPANCY'].abs().max()
 print(f"Average percent discrepancy: {avg_discrepancy:.4f}%")
 print(f"Maximum percent discrepancy: {max_discrepancy:.4f}%")
 if max_discrepancy < 1.0:
-    print("✓ Mass balance looks good (< 1% discrepancy)")
+    print("Mass balance looks good (< 1% discrepancy)")
 elif max_discrepancy < 5.0:
-    print("⚠ Mass balance acceptable but check results (1-5% discrepancy)")
+    print("Mass balance acceptable but check results (1-5% discrepancy)")
 else:
-    print("⚠ WARNING: Large mass balance error (> 5% discrepancy)")
+    print("WARNING: Large mass balance error (> 5% discrepancy)")
     print("   Check model convergence and budget calculations")
 
 # Save info file
