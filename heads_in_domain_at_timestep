@@ -203,7 +203,7 @@ csv_file = os.path.join(output_folder, f"all_cells_heads_{output_label}.csv")
 df.to_csv(csv_file, index=False)
 
 print(f"\n{'=' * 70}")
-print(f"✓ CSV saved: {csv_file}")
+print(f" CSV saved: {csv_file}")
 print(f"  File size: {os.path.getsize(csv_file) / 1024:.1f} KB")
 print(f"{'=' * 70}")
 
